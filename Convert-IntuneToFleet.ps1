@@ -176,6 +176,146 @@ function Get-LogFilePath {
     return Join-Path $directory "$baseName.log"
 }
 
+function Get-IntuneSettings {
+    <#
+    .SYNOPSIS
+        Parses an Intune JSON export file and extracts settings and metadata.
+    
+    .DESCRIPTION
+        Reads and parses an Intune Configuration Service Provider (CSP) JSON export,
+        extracting policy metadata and settings array for further processing.
+    
+    .PARAMETER FilePath
+        Path to the Intune JSON export file to parse.
+    
+    .PARAMETER LogFilePath
+        Optional path to log file for detailed parsing information.
+    
+    .OUTPUTS
+        PSCustomObject with Metadata, Settings, ParsedSuccessfully, ErrorMessage, and FilePath properties.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [Parameter()]
+        [string]$LogFilePath
+    )
+
+    # Initialize result object with properly typed empty array
+    $result = [PSCustomObject]@{
+        Metadata = $null
+        Settings = [System.Object[]]@()  # Ensure it's properly typed as array
+        ParsedSuccessfully = $false
+        ErrorMessage = ""
+        FilePath = $FilePath
+    }
+
+    # Log parsing start
+    if ($LogFilePath) {
+        Write-ConversionLog -Level "Info" -Message "Starting JSON parsing for file: $FilePath" -LogFilePath $LogFilePath
+    }
+
+    # Validate input file first using existing validation
+    try {
+        $validation = Test-IntuneJsonFile -FilePath $FilePath
+        if (-not $validation.IsValid) {
+            $result.ErrorMessage = $validation.ErrorMessage
+            $result.Settings = [System.Object[]]@()  # Ensure array is set even on error
+            if ($LogFilePath) {
+                Write-ConversionLog -Level "Error" -Message "JSON file validation failed: $($validation.ErrorMessage)" -LogFilePath $LogFilePath
+            }
+            return $result
+        }
+    }
+    catch {
+        $result.ErrorMessage = "File validation error: $($_.Exception.Message)"
+        $result.Settings = [System.Object[]]@()  # Ensure array is set even on error
+        if ($LogFilePath) {
+            Write-ConversionLog -Level "Error" -Message "JSON file validation exception: $($_.Exception.Message)" -LogFilePath $LogFilePath
+        }
+        return $result
+    }
+
+    # Read and parse JSON content
+    try {
+        $jsonContent = Get-Content -Path $FilePath -Raw -ErrorAction Stop
+        $jsonObject = $jsonContent | ConvertFrom-Json -ErrorAction Stop
+        
+        if ($LogFilePath) {
+            Write-ConversionLog -Level "Info" -Message "JSON content successfully parsed" -LogFilePath $LogFilePath
+        }
+    }
+    catch {
+        $result.ErrorMessage = "JSON parsing failed: $($_.Exception.Message)"
+        $result.Settings = [System.Object[]]@()  # Ensure array is set even on error
+        if ($LogFilePath) {
+            Write-ConversionLog -Level "Error" -Message "JSON parsing failed: $($_.Exception.Message)" -LogFilePath $LogFilePath
+        }
+        return $result
+    }
+
+    # Validate Intune structure (additional validation beyond basic file validation)
+    if (-not $jsonObject.PSObject.Properties['@odata.context']) {
+        $result.ErrorMessage = "Invalid Intune export structure: Missing '@odata.context' property"
+        $result.Settings = [System.Object[]]@()  # Ensure array is set even on error
+        if ($LogFilePath) {
+            Write-ConversionLog -Level "Error" -Message $result.ErrorMessage -LogFilePath $LogFilePath
+        }
+        return $result
+    }
+
+    if (-not $jsonObject.PSObject.Properties['settings']) {
+        $result.ErrorMessage = "Invalid Intune export structure: Missing 'settings' array"
+        $result.Settings = [System.Object[]]@()  # Ensure array is set even on error
+        if ($LogFilePath) {
+            Write-ConversionLog -Level "Error" -Message $result.ErrorMessage -LogFilePath $LogFilePath
+        }
+        return $result
+    }
+
+    # Extract metadata
+    $metadata = [PSCustomObject]@{
+        Name = $jsonObject.name
+        Description = $jsonObject.description
+        Id = $jsonObject.id
+        Platforms = $jsonObject.platforms
+        Technologies = $jsonObject.technologies
+        SettingCount = if ($jsonObject.PSObject.Properties['settingCount']) { $jsonObject.settingCount } else { $jsonObject.settings.Count }
+        CreatedDateTime = $jsonObject.createdDateTime
+        LastModifiedDateTime = $jsonObject.lastModifiedDateTime
+        ODataContext = $jsonObject.'@odata.context'
+    }
+
+    # Process settings array
+    $settings = [System.Collections.ArrayList]::new()
+    if ($jsonObject.settings -is [Array]) {
+        foreach ($setting in $jsonObject.settings) {
+            $null = $settings.Add([PSCustomObject]@{
+                Id = $setting.id
+                SettingInstance = $setting.settingInstance
+                OriginalSetting = $setting  # Keep original for reference
+            })
+        }
+    }
+    
+    # Convert to properly typed array for consistent behavior
+    $settings = [System.Object[]]@($settings)
+
+    # Log parsing success
+    if ($LogFilePath) {
+        Write-ConversionLog -Level "Info" -Message "Successfully parsed $($settings.Count) settings from JSON file" -LogFilePath $LogFilePath
+    }
+
+    # Populate result
+    $result.Metadata = $metadata
+    $result.Settings = $settings
+    $result.ParsedSuccessfully = $true
+
+    return $result
+}
+
 function Test-IntuneJsonFile {
     <#
     .SYNOPSIS

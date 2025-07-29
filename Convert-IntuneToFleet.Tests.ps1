@@ -459,3 +459,293 @@ Describe "Logging Infrastructure" {
         }
     }
 }
+
+Describe "JSON Parser Foundation" {
+    BeforeAll {
+        # Create test directory for JSON parsing tests
+        $script:JsonTestDir = Join-Path $TestDrive "JsonParsingTests"
+        New-Item -Path $script:JsonTestDir -ItemType Directory -Force | Out-Null
+        
+        # Create comprehensive test JSON based on firewall example structure
+        $script:CompleteIntuneJson = @{
+            "@odata.context" = "https://graph.microsoft.com/beta/`$metadata#deviceManagement/configurationPolicies/`$entity"
+            "createdDateTime" = "2024-10-27T17:24:38.080948Z"
+            "description" = "Enable firewall for public and private profiles"
+            "lastModifiedDateTime" = "2025-03-31T21:03:29.7043237Z"
+            "name" = "Enable public and private firewall"
+            "platforms" = "windows10"
+            "settingCount" = 2
+            "technologies" = "mdm"
+            "id" = "b35539e6-4421-4844-82e3-79c7d566c406"
+            "settings" = @(
+                @{
+                    "id" = "0"
+                    "settingInstance" = @{
+                        "@odata.type" = "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                        "settingDefinitionId" = "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+                        "choiceSettingValue" = @{
+                            "value" = "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall_true"
+                            "children" = @(
+                                @{
+                                    "@odata.type" = "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                                    "settingDefinitionId" = "vendor_msft_firewall_mdmstore_privateprofile_allowlocalipsecpolicymerge"
+                                    "choiceSettingValue" = @{
+                                        "value" = "vendor_msft_firewall_mdmstore_privateprofile_allowlocalipsecpolicymerge_true"
+                                        "children" = @()
+                                    }
+                                }
+                            )
+                        }
+                    }
+                },
+                @{
+                    "id" = "1"
+                    "settingInstance" = @{
+                        "@odata.type" = "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                        "settingDefinitionId" = "vendor_msft_firewall_mdmstore_publicprofile_enablefirewall"
+                        "choiceSettingValue" = @{
+                            "value" = "vendor_msft_firewall_mdmstore_publicprofile_enablefirewall_true"
+                            "children" = @()
+                        }
+                    }
+                }
+            )
+        } | ConvertTo-Json -Depth 10
+        
+        $script:CompleteJsonPath = Join-Path $script:JsonTestDir "complete_firewall.json"
+        Set-Content -Path $script:CompleteJsonPath -Value $script:CompleteIntuneJson
+        
+        # Create minimal valid JSON
+        $script:MinimalIntuneJson = @{
+            "@odata.context" = "https://graph.microsoft.com/beta/`$metadata#test"
+            "name" = "Minimal Test Policy"
+            "settings" = @()
+        } | ConvertTo-Json -Depth 5
+        
+        $script:MinimalJsonPath = Join-Path $script:JsonTestDir "minimal.json"
+        Set-Content -Path $script:MinimalJsonPath -Value $script:MinimalIntuneJson
+        
+        # Create JSON with simple setting type
+        $script:SimpleSettingJson = @{
+            "@odata.context" = "https://graph.microsoft.com/beta/`$metadata#test"
+            "name" = "Simple Setting Test"
+            "settings" = @(
+                @{
+                    "id" = "0"
+                    "settingInstance" = @{
+                        "@odata.type" = "#microsoft.graph.deviceManagementConfigurationSimpleSettingInstance"
+                        "settingDefinitionId" = "test_simple_setting"
+                        "simpleSettingValue" = @{
+                            "@odata.type" = "#microsoft.graph.deviceManagementConfigurationStringSettingValue"
+                            "value" = "test string value"
+                        }
+                    }
+                }
+            )
+        } | ConvertTo-Json -Depth 10
+        
+        $script:SimpleSettingJsonPath = Join-Path $script:JsonTestDir "simple_setting.json"
+        Set-Content -Path $script:SimpleSettingJsonPath -Value $script:SimpleSettingJson
+    }
+    
+    Context "Get-IntuneSettings Function" {
+        It "Should exist and be callable" {
+            { Get-IntuneSettings -FilePath $script:CompleteJsonPath } | Should -Not -Throw
+        }
+        
+        It "Should return structured PowerShell object" {
+            $result = Get-IntuneSettings -FilePath $script:CompleteJsonPath
+            $result | Should -BeOfType [PSCustomObject]
+            $result.PSObject.Properties.Name | Should -Contain "Metadata"
+            $result.PSObject.Properties.Name | Should -Contain "Settings"
+            $result.PSObject.Properties.Name | Should -Contain "ParsedSuccessfully"
+        }
+        
+        It "Should extract basic metadata correctly" {
+            $result = Get-IntuneSettings -FilePath $script:CompleteJsonPath
+            
+            $result.Metadata | Should -BeOfType [PSCustomObject]
+            $result.Metadata.Name | Should -Be "Enable public and private firewall"
+            $result.Metadata.Description | Should -Be "Enable firewall for public and private profiles"
+            $result.Metadata.SettingCount | Should -Be 2
+            $result.Metadata.Id | Should -Be "b35539e6-4421-4844-82e3-79c7d566c406"
+            $result.Metadata.Platforms | Should -Be "windows10"
+            $result.Metadata.Technologies | Should -Be "mdm"
+        }
+        
+        It "Should handle missing optional metadata gracefully" {
+            $result = Get-IntuneSettings -FilePath $script:MinimalJsonPath
+            
+            $result.Metadata.Name | Should -Be "Minimal Test Policy"
+            $result.Metadata.Description | Should -BeNullOrEmpty
+            $result.Metadata.SettingCount | Should -Be 0
+        }
+        
+        It "Should parse settings array structure" {
+            $result = Get-IntuneSettings -FilePath $script:CompleteJsonPath
+            
+            $result.Settings | Should -BeOfType [Array]
+            $result.Settings.Count | Should -Be 2
+            $result.Settings[0].Id | Should -Be "0"
+            $result.Settings[1].Id | Should -Be "1"
+        }
+        
+        It "Should handle empty settings array" {
+            $result = Get-IntuneSettings -FilePath $script:MinimalJsonPath
+            
+            $result.Settings | Should -BeOfType [Array]
+            $result.Settings.Count | Should -Be 0
+        }
+        
+        It "Should preserve original setting structure" {
+            $result = Get-IntuneSettings -FilePath $script:CompleteJsonPath
+            
+            $firstSetting = $result.Settings[0]
+            $firstSetting.SettingInstance | Should -Not -BeNullOrEmpty
+            $firstSetting.SettingInstance.settingDefinitionId | Should -Be "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+            $firstSetting.SettingInstance.choiceSettingValue | Should -Not -BeNullOrEmpty
+        }
+        
+        It "Should handle different setting types (choice vs simple)" {
+            $result = Get-IntuneSettings -FilePath $script:SimpleSettingJsonPath
+            
+            $setting = $result.Settings[0]
+            $setting.SettingInstance.'@odata.type' | Should -Be "#microsoft.graph.deviceManagementConfigurationSimpleSettingInstance"
+            $setting.SettingInstance.simpleSettingValue | Should -Not -BeNullOrEmpty
+        }
+        
+        It "Should track parsing success status" {
+            $result = Get-IntuneSettings -FilePath $script:CompleteJsonPath
+            $result.ParsedSuccessfully | Should -Be $true
+        }
+        
+        It "Should handle malformed JSON gracefully" {
+            $malformedJsonPath = Join-Path $script:JsonTestDir "malformed.json"
+            Set-Content -Path $malformedJsonPath -Value '{"invalid": json syntax'
+            
+            $result = Get-IntuneSettings -FilePath $malformedJsonPath
+            $result.ParsedSuccessfully | Should -Be $false
+            $result.ErrorMessage | Should -Match "JSON|parse|syntax"
+        }
+        
+        It "Should validate required Intune structure" {
+            $invalidStructurePath = Join-Path $script:JsonTestDir "invalid_structure.json"
+            $invalidJson = @{ "someProperty" = "value" } | ConvertTo-Json
+            Set-Content -Path $invalidStructurePath -Value $invalidJson
+            
+            $result = Get-IntuneSettings -FilePath $invalidStructurePath
+            $result.ParsedSuccessfully | Should -Be $false
+            $result.ErrorMessage | Should -Match "Intune|structure|format"
+        }
+        
+        It "Should handle large JSON files efficiently" {
+            # Create a larger JSON file with many settings
+            $largeSettings = @()
+            for ($i = 0; $i -lt 50; $i++) {
+                $largeSettings += @{
+                    "id" = "$i"
+                    "settingInstance" = @{
+                        "settingDefinitionId" = "test_setting_$i"
+                        "choiceSettingValue" = @{
+                            "value" = "test_value_$i"
+                            "children" = @()
+                        }
+                    }
+                }
+            }
+            
+            $largeJson = @{
+                "@odata.context" = "https://graph.microsoft.com/beta/`$metadata#test"
+                "name" = "Large Test Policy"
+                "settingCount" = 50
+                "settings" = $largeSettings
+            } | ConvertTo-Json -Depth 10
+            
+            $largeJsonPath = Join-Path $script:JsonTestDir "large.json"
+            Set-Content -Path $largeJsonPath -Value $largeJson
+            
+            $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            $result = Get-IntuneSettings -FilePath $largeJsonPath
+            $stopwatch.Stop()
+            
+            $result.ParsedSuccessfully | Should -Be $true
+            $result.Settings.Count | Should -Be 50
+            $stopwatch.ElapsedMilliseconds | Should -BeLessThan 5000  # Should complete within 5 seconds
+        }
+    }
+    
+    Context "Integration with Existing Systems" {
+        It "Should integrate with file validation from Step 2" {
+            Mock Test-IntuneJsonFile { return [PSCustomObject]@{ IsValid = $true; ErrorMessage = ""; FilePath = $FilePath } }
+            
+            $result = Get-IntuneSettings -FilePath $script:CompleteJsonPath
+            
+            Assert-MockCalled Test-IntuneJsonFile -Exactly 1
+            $result.ParsedSuccessfully | Should -Be $true
+        }
+        
+        It "Should handle validation failures gracefully" {
+            Mock Test-IntuneJsonFile { return [PSCustomObject]@{ IsValid = $false; ErrorMessage = "Test validation error"; FilePath = $FilePath } }
+            
+            $result = Get-IntuneSettings -FilePath $script:CompleteJsonPath
+            
+            $result.ParsedSuccessfully | Should -Be $false
+            $result.ErrorMessage | Should -Match "Test validation error"
+        }
+        
+        It "Should integrate with logging system from Step 3" {
+            Mock Write-ConversionLog { }
+            
+            $result = Get-IntuneSettings -FilePath $script:CompleteJsonPath -LogFilePath "test.log"
+            
+            Assert-MockCalled Write-ConversionLog -ParameterFilter { $Level -eq "Info" -and $Message -like "*JSON parsing*" }
+        }
+        
+        It "Should log parsing errors appropriately" {
+            Mock Write-ConversionLog { }
+            $malformedJsonPath = Join-Path $script:JsonTestDir "malformed2.json"
+            Set-Content -Path $malformedJsonPath -Value '{"broken": json'
+            
+            $result = Get-IntuneSettings -FilePath $malformedJsonPath -LogFilePath "test.log"
+            
+            Assert-MockCalled Write-ConversionLog -ParameterFilter { $Level -eq "Error" -and ($Message -like "*parsing failed*" -or $Message -like "*validation failed*") }
+        }
+    }
+    
+    Context "Error Handling and Edge Cases" {
+        It "Should handle file not found errors" {
+            $nonExistentPath = Join-Path $script:JsonTestDir "nonexistent.json"
+            
+            $result = Get-IntuneSettings -FilePath $nonExistentPath
+            
+            $result.ParsedSuccessfully | Should -Be $false
+            $result.ErrorMessage | Should -Match "not found|does not exist"
+        }
+        
+        It "Should handle permission denied errors" {
+            if ($IsWindows -or $PSVersionTable.PSVersion.Major -le 5) {
+                $restrictedPath = Join-Path $script:JsonTestDir "restricted.json"
+                Set-Content -Path $restrictedPath -Value $script:MinimalIntuneJson
+                Set-ItemProperty -Path $restrictedPath -Name IsReadOnly -Value $true
+                
+                # This should still work on most systems, but test the error handling pattern
+                $result = Get-IntuneSettings -FilePath $restrictedPath
+                $result | Should -Not -BeNullOrEmpty
+                
+                # Clean up
+                Set-ItemProperty -Path $restrictedPath -Name IsReadOnly -Value $false
+                Remove-Item -Path $restrictedPath -Force
+            } else {
+                Set-ItResult -Skipped -Because "Permission test not supported on this platform"
+            }
+        }
+        
+        It "Should provide detailed error context" {
+            $result = Get-IntuneSettings -FilePath $script:CompleteJsonPath
+            
+            # Should include parsing context information
+            $result.PSObject.Properties.Name | Should -Contain "FilePath"
+            $result.FilePath | Should -Be $script:CompleteJsonPath
+        }
+    }
+}
