@@ -55,6 +55,127 @@ param(
     [string]$OutputFile
 )
 
+# Script-level variable for thread-safe logging
+$script:LogLock = New-Object System.Object
+
+function Write-ConversionLog {
+    <#
+    .SYNOPSIS
+        Writes structured log entries to file and optionally to console.
+    
+    .DESCRIPTION
+        Provides structured logging with timestamps, log levels, and thread-safe file writing.
+        Supports different log levels and console output based on preferences.
+    
+    .PARAMETER Level
+        Log level: Debug, Info, Warning, or Error.
+    
+    .PARAMETER Message
+        Log message to write.
+    
+    .PARAMETER LogFilePath
+        Path to the log file where entries will be written.
+    
+    .PARAMETER ShowOnConsole
+        Whether to also display the message on console based on log level and preferences.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("Debug", "Info", "Warning", "Error")]
+        [string]$Level,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+
+        [Parameter(Mandatory = $true)]
+        [string]$LogFilePath,
+
+        [Parameter()]
+        [switch]$ShowOnConsole
+    )
+
+    # Create timestamp
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    
+    # Format log entry
+    $logEntry = "$timestamp [$($Level.ToUpper())] $Message"
+    
+    # Thread-safe file writing
+    [System.Threading.Monitor]::Enter($script:LogLock)
+    try {
+        # Ensure parent directory exists
+        $parentDir = Split-Path -Path $LogFilePath -Parent
+        if ($parentDir -and -not (Test-Path $parentDir)) {
+            New-Item -Path $parentDir -ItemType Directory -Force | Out-Null
+        }
+        
+        # Write to log file
+        try {
+            Add-Content -Path $LogFilePath -Value $logEntry -ErrorAction Stop
+        }
+        catch {
+            # If we can't write to log file, at least show on console
+            Write-Warning "Cannot write to log file '$LogFilePath': $($_.Exception.Message)"
+            $ShowOnConsole = $true
+        }
+    }
+    finally {
+        [System.Threading.Monitor]::Exit($script:LogLock)
+    }
+    
+    # Console output based on level and preferences
+    if ($ShowOnConsole) {
+        switch ($Level) {
+            "Debug" {
+                if ($DebugPreference -ne "SilentlyContinue") {
+                    Write-Host $logEntry -ForegroundColor Cyan
+                }
+            }
+            "Info" {
+                Write-Host $logEntry -ForegroundColor Green
+            }
+            "Warning" {
+                Write-Host $logEntry -ForegroundColor Yellow
+            }
+            "Error" {
+                Write-Host $logEntry -ForegroundColor Red
+            }
+        }
+    }
+}
+
+function Get-LogFilePath {
+    <#
+    .SYNOPSIS
+        Generates a log file path based on the output file path.
+    
+    .DESCRIPTION
+        Creates a .log file path in the same directory as the output file,
+        using the same base name but with .log extension.
+    
+    .PARAMETER OutputFile
+        The output file path to base the log file path on.
+    
+    .OUTPUTS
+        String representing the log file path.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$OutputFile
+    )
+    
+    $directory = Split-Path -Path $OutputFile -Parent
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($OutputFile)
+    
+    if ([string]::IsNullOrEmpty($directory)) {
+        $directory = "."
+    }
+    
+    return Join-Path $directory "$baseName.log"
+}
+
 function Test-IntuneJsonFile {
     <#
     .SYNOPSIS
@@ -252,48 +373,107 @@ function Convert-IntuneToFleet {
         [string]$OutputFile
     )
 
+    # Initialize logging
+    $logFilePath = $null
+    if ($OutputFile) {
+        $logFilePath = Get-LogFilePath -OutputFile $OutputFile
+    } elseif ($InputFile) {
+        $tempOutputFile = [System.IO.Path]::ChangeExtension($InputFile, '.xml')
+        $logFilePath = Get-LogFilePath -OutputFile $tempOutputFile
+    }
+
+    # Log conversion start
+    if ($logFilePath) {
+        Write-ConversionLog -Level "Info" -Message "Starting conversion process" -LogFilePath $logFilePath -ShowOnConsole
+    }
+
     # Check if no parameters provided - indicate interactive mode
     if (-not $InputFile -and -not $OutputFile) {
-        Write-Host "No parameters provided - entering interactive mode" -ForegroundColor Yellow
+        $message = "No parameters provided - entering interactive mode"
+        if ($logFilePath) {
+            Write-ConversionLog -Level "Info" -Message $message -LogFilePath $logFilePath -ShowOnConsole
+        } else {
+            # Create a temporary log file for interactive mode
+            $tempLogFile = Join-Path (Get-Location) "conversion_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+            Write-ConversionLog -Level "Info" -Message $message -LogFilePath $tempLogFile -ShowOnConsole
+            $logFilePath = $tempLogFile
+        }
     }
 
     # Validate input file if provided
     if ($InputFile) {
         $inputValidation = Test-IntuneJsonFile -FilePath $InputFile
         if (-not $inputValidation.IsValid) {
+            if ($logFilePath) {
+                Write-ConversionLog -Level "Error" -Message "Input file validation failed: $($inputValidation.ErrorMessage)" -LogFilePath $logFilePath -ShowOnConsole
+            }
             throw $inputValidation.ErrorMessage
         }
-        Write-Verbose "Input file validation passed: $InputFile"
+        $message = "Input file validation passed: $InputFile"
+        Write-Verbose $message
+        if ($logFilePath) {
+            Write-ConversionLog -Level "Info" -Message $message -LogFilePath $logFilePath
+        }
     }
 
     # Generate output file path if not provided
     if ($InputFile -and -not $OutputFile) {
         $OutputFile = [System.IO.Path]::ChangeExtension($InputFile, '.xml')
-        Write-Verbose "Auto-generated output file: $OutputFile"
+        $message = "Auto-generated output file: $OutputFile"
+        Write-Verbose $message
+        if ($logFilePath) {
+            Write-ConversionLog -Level "Info" -Message $message -LogFilePath $logFilePath
+        }
+        # Update log file path with correct output file
+        $logFilePath = Get-LogFilePath -OutputFile $OutputFile
     }
 
     # Validate output file path if provided
     if ($OutputFile) {
         $outputValidation = Test-OutputPath -FilePath $OutputFile
         if (-not $outputValidation.IsValid) {
+            if ($logFilePath) {
+                Write-ConversionLog -Level "Error" -Message "Output path validation failed: $($outputValidation.ErrorMessage)" -LogFilePath $logFilePath -ShowOnConsole
+            }
             throw $outputValidation.ErrorMessage
         }
-        Write-Verbose "Output path validation passed: $OutputFile"
+        $message = "Output path validation passed: $OutputFile"
+        Write-Verbose $message
+        if ($logFilePath) {
+            Write-ConversionLog -Level "Info" -Message $message -LogFilePath $logFilePath
+        }
     }
 
     # Handle WhatIf scenario first
     if ($WhatIfPreference) {
         $whatIfMessage = "What if: Would convert $InputFile to $OutputFile"
+        if ($logFilePath) {
+            Write-ConversionLog -Level "Info" -Message $whatIfMessage -LogFilePath $logFilePath
+        }
         $PSCmdlet.ShouldProcess("Convert Intune CSP to Fleet XML", "Conversion") | Out-Null
         return $whatIfMessage
     }
 
     if ($PSCmdlet.ShouldProcess("Convert Intune CSP to Fleet XML", "Conversion")) {
-        Write-Verbose "Starting conversion process..."
+        $message = "Beginning actual conversion process..."
+        Write-Verbose $message
+        if ($logFilePath) {
+            Write-ConversionLog -Level "Info" -Message $message -LogFilePath $logFilePath
+        }
         
         # TODO: Implement actual conversion logic in subsequent steps
-        Write-Host "Conversion logic not yet implemented - this is Step 1 foundation" -ForegroundColor Green
-        return "Conversion completed successfully"
+        $statusMessage = "Conversion logic not yet implemented - this is Step 3 foundation"
+        if ($logFilePath) {
+            Write-ConversionLog -Level "Info" -Message $statusMessage -LogFilePath $logFilePath -ShowOnConsole
+        } else {
+            Write-Host $statusMessage -ForegroundColor Green
+        }
+        
+        $completionMessage = "Conversion completed successfully"
+        if ($logFilePath) {
+            Write-ConversionLog -Level "Info" -Message $completionMessage -LogFilePath $logFilePath -ShowOnConsole
+        }
+        return $completionMessage
     }
 }
 

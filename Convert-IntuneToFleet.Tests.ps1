@@ -265,3 +265,197 @@ Describe "File I/O and Validation Framework" {
         }
     }
 }
+
+Describe "Logging Infrastructure" {
+    BeforeAll {
+        # Create test directory for logging tests
+        $script:LogTestDir = Join-Path $TestDrive "LoggingTests"
+        New-Item -Path $script:LogTestDir -ItemType Directory -Force | Out-Null
+        
+        # Define test log file paths
+        $script:TestLogFile = Join-Path $script:LogTestDir "test_conversion.log"
+        $script:TestOutputFile = Join-Path $script:LogTestDir "test_output.xml"
+    }
+    
+    Context "Write-ConversionLog Function" {
+        It "Should exist and be callable" {
+            { Write-ConversionLog -Level "Info" -Message "Test message" -LogFilePath $script:TestLogFile } | Should -Not -Throw
+        }
+        
+        It "Should create log file if it doesn't exist" {
+            $newLogFile = Join-Path $script:LogTestDir "new_log.log"
+            Write-ConversionLog -Level "Info" -Message "Test message" -LogFilePath $newLogFile
+            Test-Path $newLogFile | Should -Be $true
+        }
+        
+        It "Should write structured log entries with timestamps" {
+            Write-ConversionLog -Level "Info" -Message "Test structured logging" -LogFilePath $script:TestLogFile
+            
+            $logContent = Get-Content $script:TestLogFile -Raw
+            $logContent | Should -Match '\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}'  # Timestamp format
+            $logContent | Should -Match '\[INFO\]'  # Log level
+            $logContent | Should -Match 'Test structured logging'  # Message
+        }
+        
+        It "Should support different log levels" {
+            $levels = @("Debug", "Info", "Warning", "Error")
+            
+            foreach ($level in $levels) {
+                Write-ConversionLog -Level $level -Message "Test $level message" -LogFilePath $script:TestLogFile
+            }
+            
+            $logContent = Get-Content $script:TestLogFile -Raw
+            foreach ($level in $levels) {
+                $logContent | Should -Match "\[$($level.ToUpper())\]"
+            }
+        }
+        
+        It "Should append to existing log file" {
+            $freshLogFile = Join-Path $script:LogTestDir "append_test.log"
+            Write-ConversionLog -Level "Info" -Message "First message" -LogFilePath $freshLogFile
+            Write-ConversionLog -Level "Info" -Message "Second message" -LogFilePath $freshLogFile
+            
+            $logLines = Get-Content $freshLogFile
+            $logLines | Should -HaveCount 2
+            $logLines[0] | Should -Match "First message"
+            $logLines[1] | Should -Match "Second message"
+        }
+        
+        It "Should handle console output parameter" {
+            Mock Write-Host { }
+            
+            Write-ConversionLog -Level "Info" -Message "Console test" -LogFilePath $script:TestLogFile -ShowOnConsole
+            
+            Assert-MockCalled Write-Host -ParameterFilter { $Object -like "*Console test*" }
+        }
+        
+        It "Should not show debug messages on console by default" {
+            Mock Write-Host { }
+            
+            Write-ConversionLog -Level "Debug" -Message "Debug test" -LogFilePath $script:TestLogFile -ShowOnConsole
+            
+            Assert-MockCalled Write-Host -Times 0
+        }
+        
+        It "Should show debug messages on console when DebugPreference is set" {
+            Mock Write-Host { }
+            
+            $originalDebugPreference = $DebugPreference
+            $DebugPreference = "Continue"
+            
+            try {
+                Write-ConversionLog -Level "Debug" -Message "Debug test" -LogFilePath $script:TestLogFile -ShowOnConsole
+                Assert-MockCalled Write-Host -ParameterFilter { $Object -like "*Debug test*" }
+            }
+            finally {
+                $DebugPreference = $originalDebugPreference
+            }
+        }
+    }
+    
+    Context "Get-LogFilePath Helper Function" {
+        It "Should exist and be callable" {
+            { Get-LogFilePath -OutputFile $script:TestOutputFile } | Should -Not -Throw
+        }
+        
+        It "Should generate log file path based on output file" {
+            $logPath = Get-LogFilePath -OutputFile $script:TestOutputFile
+            $logPath | Should -Match "test_output\.log$"
+        }
+        
+        It "Should handle output files without extensions" {
+            $outputWithoutExt = Join-Path $script:LogTestDir "no_extension"
+            $logPath = Get-LogFilePath -OutputFile $outputWithoutExt
+            $logPath | Should -Match "no_extension\.log$"
+        }
+        
+        It "Should place log file in same directory as output file" {
+            $logPath = Get-LogFilePath -OutputFile $script:TestOutputFile
+            Split-Path $logPath -Parent | Should -Be $script:LogTestDir
+        }
+    }
+    
+    Context "Integration with Main Function" {
+        It "Should initialize logging when Convert-IntuneToFleet is called" {
+            Mock Write-ConversionLog { }
+            Mock Test-IntuneJsonFile { return [PSCustomObject]@{ IsValid = $true; ErrorMessage = ""; FilePath = $FilePath } }
+            Mock Test-OutputPath { return [PSCustomObject]@{ IsValid = $true; ErrorMessage = ""; FilePath = $FilePath } }
+            
+            Convert-IntuneToFleet -InputFile $script:TestJsonFile -OutputFile $script:TestOutputFile -WhatIf
+            
+            Assert-MockCalled Write-ConversionLog -ParameterFilter { $Level -eq "Info" -and $Message -like "*Starting conversion*" }
+        }
+        
+        It "Should log validation steps" {
+            Mock Write-ConversionLog { }
+            Mock Test-IntuneJsonFile { return [PSCustomObject]@{ IsValid = $true; ErrorMessage = ""; FilePath = $FilePath } }
+            Mock Test-OutputPath { return [PSCustomObject]@{ IsValid = $true; ErrorMessage = ""; FilePath = $FilePath } }
+            
+            Convert-IntuneToFleet -InputFile $script:TestJsonFile -OutputFile $script:TestOutputFile -WhatIf
+            
+            Assert-MockCalled Write-ConversionLog -ParameterFilter { $Level -eq "Info" -and $Message -like "*validation passed*" }
+        }
+        
+        It "Should log errors when validation fails" {
+            Mock Write-ConversionLog { }
+            Mock Test-IntuneJsonFile { return [PSCustomObject]@{ IsValid = $false; ErrorMessage = "Test validation error"; FilePath = $FilePath } }
+            
+            { Convert-IntuneToFleet -InputFile $script:TestJsonFile -WhatIf } | Should -Throw
+            
+            Assert-MockCalled Write-ConversionLog -ParameterFilter { $Level -eq "Error" -and $Message -like "*Test validation error*" }
+        }
+        
+        It "Should replace Write-Host calls with logging system" {
+            Mock Write-ConversionLog { }
+            Mock Test-IntuneJsonFile { return [PSCustomObject]@{ IsValid = $true; ErrorMessage = ""; FilePath = $FilePath } }
+            Mock Test-OutputPath { return [PSCustomObject]@{ IsValid = $true; ErrorMessage = ""; FilePath = $FilePath } }
+            Mock Write-Host { }
+            
+            Convert-IntuneToFleet -WhatIf
+            
+            # Should use logging instead of Write-Host for interactive mode message
+            Assert-MockCalled Write-ConversionLog -ParameterFilter { $Message -like "*interactive mode*" }
+            Assert-MockCalled Write-Host -Times 0
+        }
+    }
+    
+    Context "Log File Management" {
+        It "Should handle concurrent logging safely" {
+            $concurrentLogFile = Join-Path $script:LogTestDir "concurrent_test.log"
+            $jobs = @()
+            
+            for ($i = 1; $i -le 5; $i++) {
+                $jobs += Start-Job -ScriptBlock {
+                    param($LogFile, $ScriptPath, $Message)
+                    . $ScriptPath
+                    Write-ConversionLog -Level "Info" -Message $Message -LogFilePath $LogFile
+                } -ArgumentList $concurrentLogFile, "$PSScriptRoot\Convert-IntuneToFleet.ps1", "Concurrent message $i"
+            }
+            
+            $jobs | Wait-Job | Remove-Job
+            
+            # Wait a moment for file system to settle
+            Start-Sleep -Milliseconds 100
+            
+            $logContent = Get-Content $concurrentLogFile
+            $logContent | Should -HaveCount 5
+            $logContent | ForEach-Object { $_ | Should -Match "Concurrent message \d+" }
+        }
+        
+        It "Should handle log file permission errors gracefully" {
+            if ($IsWindows -or $PSVersionTable.PSVersion.Major -le 5) {
+                $readOnlyLog = Join-Path $script:LogTestDir "readonly.log"
+                New-Item -Path $readOnlyLog -ItemType File -Force | Out-Null
+                Set-ItemProperty -Path $readOnlyLog -Name IsReadOnly -Value $true
+                
+                { Write-ConversionLog -Level "Info" -Message "Test" -LogFilePath $readOnlyLog } | Should -Not -Throw
+                
+                # Clean up
+                Set-ItemProperty -Path $readOnlyLog -Name IsReadOnly -Value $false
+                Remove-Item -Path $readOnlyLog -Force
+            } else {
+                Set-ItResult -Skipped -Because "Read-only file test not supported on this platform"
+            }
+        }
+    }
+}
