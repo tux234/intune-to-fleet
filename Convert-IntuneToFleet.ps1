@@ -55,6 +55,146 @@ param(
     [string]$OutputFile
 )
 
+function Test-IntuneJsonFile {
+    <#
+    .SYNOPSIS
+        Validates an Intune JSON export file.
+    
+    .DESCRIPTION
+        Checks if the specified file exists, contains valid JSON, and has the expected
+        Intune export structure (settings array and @odata.context).
+    
+    .PARAMETER FilePath
+        Path to the JSON file to validate.
+    
+    .OUTPUTS
+        PSCustomObject with IsValid, ErrorMessage, and FilePath properties.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath
+    )
+    
+    $result = [PSCustomObject]@{
+        IsValid = $false
+        ErrorMessage = ""
+        FilePath = $FilePath
+    }
+    
+    # Check if file exists
+    if (-not (Test-Path -Path $FilePath)) {
+        $result.ErrorMessage = "File not found: $FilePath"
+        return $result
+    }
+    
+    # Check if file is readable
+    try {
+        $content = Get-Content -Path $FilePath -Raw -ErrorAction Stop
+    }
+    catch {
+        $result.ErrorMessage = "Cannot read file: $($_.Exception.Message)"
+        return $result
+    }
+    
+    # Parse JSON
+    try {
+        $jsonObject = $content | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        $result.ErrorMessage = "Invalid JSON syntax: $($_.Exception.Message)"
+        return $result
+    }
+    
+    # Validate Intune export format
+    if (-not $jsonObject.PSObject.Properties['@odata.context']) {
+        $result.ErrorMessage = "Invalid Intune export format: Missing '@odata.context' property"
+        return $result
+    }
+    
+    if (-not $jsonObject.PSObject.Properties['settings']) {
+        $result.ErrorMessage = "Invalid Intune export format: Missing 'settings' array"
+        return $result
+    }
+    
+    if ($jsonObject.settings -isnot [Array]) {
+        $result.ErrorMessage = "Invalid Intune export format: 'settings' must be an array"
+        return $result
+    }
+    
+    # All validations passed
+    $result.IsValid = $true
+    return $result
+}
+
+function Test-OutputPath {
+    <#
+    .SYNOPSIS
+        Validates an output file path for write access.
+    
+    .DESCRIPTION
+        Checks if the specified output path is valid and writable, including
+        checking parent directory existence and permissions.
+    
+    .PARAMETER FilePath
+        Path to the output file to validate.
+    
+    .OUTPUTS
+        PSCustomObject with IsValid, ErrorMessage, and FilePath properties.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath
+    )
+    
+    $result = [PSCustomObject]@{
+        IsValid = $false
+        ErrorMessage = ""
+        FilePath = $FilePath
+    }
+    
+    # Get parent directory
+    $parentDir = Split-Path -Path $FilePath -Parent
+    if ([string]::IsNullOrEmpty($parentDir)) {
+        $parentDir = "."
+    }
+    
+    # Check if parent directory exists
+    if (-not (Test-Path -Path $parentDir)) {
+        # Try to resolve the parent directory to see if it's valid
+        try {
+            # For absolute paths that don't exist, this will fail
+            $null = [System.IO.Path]::GetFullPath($parentDir)
+            # Additional check - see if we can access parent of parent
+            $grandParent = Split-Path -Path $parentDir -Parent
+            if ($grandParent -and -not (Test-Path -Path $grandParent)) {
+                $result.ErrorMessage = "Invalid directory path: $parentDir (parent directory does not exist)"
+                return $result
+            }
+        }
+        catch {
+            $result.ErrorMessage = "Invalid directory path: $parentDir"
+            return $result
+        }
+    }
+    
+    # Test write access by attempting to create a temporary file
+    $testFile = Join-Path $parentDir "temp_write_test_$(Get-Random).tmp"
+    try {
+        New-Item -Path $testFile -ItemType File -Force -ErrorAction Stop | Out-Null
+        Remove-Item -Path $testFile -Force -ErrorAction SilentlyContinue
+    }
+    catch {
+        $result.ErrorMessage = "Cannot write to directory: $($_.Exception.Message)"
+        return $result
+    }
+    
+    # All validations passed
+    $result.IsValid = $true
+    return $result
+}
+
 function Convert-IntuneToFleet {
     <#
     .SYNOPSIS
@@ -115,6 +255,30 @@ function Convert-IntuneToFleet {
     # Check if no parameters provided - indicate interactive mode
     if (-not $InputFile -and -not $OutputFile) {
         Write-Host "No parameters provided - entering interactive mode" -ForegroundColor Yellow
+    }
+
+    # Validate input file if provided
+    if ($InputFile) {
+        $inputValidation = Test-IntuneJsonFile -FilePath $InputFile
+        if (-not $inputValidation.IsValid) {
+            throw $inputValidation.ErrorMessage
+        }
+        Write-Verbose "Input file validation passed: $InputFile"
+    }
+
+    # Generate output file path if not provided
+    if ($InputFile -and -not $OutputFile) {
+        $OutputFile = [System.IO.Path]::ChangeExtension($InputFile, '.xml')
+        Write-Verbose "Auto-generated output file: $OutputFile"
+    }
+
+    # Validate output file path if provided
+    if ($OutputFile) {
+        $outputValidation = Test-OutputPath -FilePath $OutputFile
+        if (-not $outputValidation.IsValid) {
+            throw $outputValidation.ErrorMessage
+        }
+        Write-Verbose "Output path validation passed: $OutputFile"
     }
 
     # Handle WhatIf scenario first
