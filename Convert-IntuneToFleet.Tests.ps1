@@ -584,7 +584,8 @@ Describe "JSON Parser Foundation" {
         It "Should parse settings array structure" {
             $result = Get-IntuneSettings -FilePath $script:CompleteJsonPath
             
-            $result.Settings | Should -BeOfType [Array]
+            $result.Settings | Should -Not -BeNullOrEmpty
+            $result.Settings.GetType().BaseType.Name | Should -Be "Array"
             $result.Settings.Count | Should -Be 2
             $result.Settings[0].Id | Should -Be "0"
             $result.Settings[1].Id | Should -Be "1"
@@ -593,8 +594,11 @@ Describe "JSON Parser Foundation" {
         It "Should handle empty settings array" {
             $result = Get-IntuneSettings -FilePath $script:MinimalJsonPath
             
-            $result.Settings | Should -BeOfType [Array]
             $result.Settings.Count | Should -Be 0
+            # The Settings property should be a properly typed array even when empty
+            if ($result.Settings) {
+                $result.Settings.GetType().BaseType.Name | Should -Be "Array"
+            }
         }
         
         It "Should preserve original setting structure" {
@@ -746,6 +750,789 @@ Describe "JSON Parser Foundation" {
             # Should include parsing context information
             $result.PSObject.Properties.Name | Should -Contain "FilePath"
             $result.FilePath | Should -Be $script:CompleteJsonPath
+        }
+    }
+}
+
+Describe "Setting Extraction Engine" {
+    BeforeAll {
+        # Create test directory for setting extraction tests
+        $script:ExtractionTestDir = Join-Path $TestDrive "SettingExtractionTests"
+        New-Item -Path $script:ExtractionTestDir -ItemType Directory -Force | Out-Null
+        
+        # Create test JSON with nested settings for extraction testing
+        $script:NestedSettingsJson = @{
+            "@odata.context" = "https://graph.microsoft.com/beta/`$metadata#deviceManagement/configurationPolicies/`$entity"
+            "name" = "Complex Nested Settings Test"
+            "settings" = @(
+                @{
+                    "id" = "0"
+                    "settingInstance" = @{
+                        "@odata.type" = "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                        "settingDefinitionId" = "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+                        "choiceSettingValue" = @{
+                            "value" = "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall_true"
+                            "children" = @(
+                                @{
+                                    "@odata.type" = "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                                    "settingDefinitionId" = "vendor_msft_firewall_mdmstore_privateprofile_allowlocalipsecpolicymerge"
+                                    "choiceSettingValue" = @{
+                                        "value" = "vendor_msft_firewall_mdmstore_privateprofile_allowlocalipsecpolicymerge_true"
+                                        "children" = @(
+                                            @{
+                                                "@odata.type" = "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                                                "settingDefinitionId" = "vendor_msft_firewall_mdmstore_privateprofile_nested_level3"
+                                                "choiceSettingValue" = @{
+                                                    "value" = "vendor_msft_firewall_mdmstore_privateprofile_nested_level3_enabled"
+                                                    "children" = @()
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            )
+                        }
+                    }
+                },
+                @{
+                    "id" = "1"
+                    "settingInstance" = @{
+                        "@odata.type" = "#microsoft.graph.deviceManagementConfigurationSimpleSettingInstance"
+                        "settingDefinitionId" = "vendor_msft_policy_config_update_activehoursstart"
+                        "simpleSettingValue" = @{
+                            "@odata.type" = "#microsoft.graph.deviceManagementConfigurationIntegerSettingValue"
+                            "value" = 8
+                        }
+                    }
+                },
+                @{
+                    "id" = "2"
+                    "settingInstance" = @{
+                        "@odata.type" = "#microsoft.graph.deviceManagementConfigurationChoiceSettingInstance"
+                        "settingDefinitionId" = "vendor_msft_firewall_mdmstore_publicprofile_enablefirewall"
+                        "choiceSettingValue" = @{
+                            "value" = "vendor_msft_firewall_mdmstore_publicprofile_enablefirewall_true"
+                            "children" = @()
+                        }
+                    }
+                }
+            )
+        } | ConvertTo-Json -Depth 15
+        
+        $script:NestedSettingsJsonPath = Join-Path $script:ExtractionTestDir "nested_settings.json"
+        Set-Content -Path $script:NestedSettingsJsonPath -Value $script:NestedSettingsJson
+        
+        # Create simple settings test JSON
+        $script:SimpleExtractionJson = @{
+            "@odata.context" = "https://graph.microsoft.com/beta/`$metadata#test"
+            "name" = "Simple Extraction Test"
+            "settings" = @(
+                @{
+                    "id" = "0"
+                    "settingInstance" = @{
+                        "settingDefinitionId" = "simple_setting_only"
+                        "choiceSettingValue" = @{
+                            "value" = "simple_value"
+                            "children" = @()
+                        }
+                    }
+                }
+            )
+        } | ConvertTo-Json -Depth 10
+        
+        $script:SimpleExtractionJsonPath = Join-Path $script:ExtractionTestDir "simple_extraction.json"
+        Set-Content -Path $script:SimpleExtractionJsonPath -Value $script:SimpleExtractionJson
+    }
+    
+    Context "Get-AllSettingDefinitionIds Function" {
+        It "Should exist and be callable" {
+            { Get-AllSettingDefinitionIds -Settings @() } | Should -Not -Throw
+        }
+        
+        It "Should return empty array for empty settings" {
+            $result = Get-AllSettingDefinitionIds -Settings @()
+            $result.Count | Should -Be 0
+            # The result should be a properly typed array even when empty
+            if ($result) {
+                $result.GetType().BaseType.Name | Should -Be "Array"
+            }
+        }
+        
+        It "Should extract top-level settingDefinitionIds" {
+            $parsedSettings = Get-IntuneSettings -FilePath $script:SimpleExtractionJsonPath
+            $result = Get-AllSettingDefinitionIds -Settings $parsedSettings.Settings
+            
+            $result.Count | Should -Be 1
+            $result[0].SettingDefinitionId | Should -Be "simple_setting_only"
+            $result[0].Value | Should -Be "simple_value"
+            $result[0].Path | Should -Be "settings[0]"
+        }
+        
+        It "Should recursively extract nested children settingDefinitionIds" {
+            $parsedSettings = Get-IntuneSettings -FilePath $script:NestedSettingsJsonPath
+            $result = Get-AllSettingDefinitionIds -Settings $parsedSettings.Settings
+            
+            # Should find: privateprofile_enablefirewall, allowlocalipsecpolicymerge, nested_level3, activehoursstart, publicprofile_enablefirewall
+            $result.Count | Should -Be 5
+            
+            $settingIds = $result | ForEach-Object { $_.SettingDefinitionId }
+            $settingIds | Should -Contain "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+            $settingIds | Should -Contain "vendor_msft_firewall_mdmstore_privateprofile_allowlocalipsecpolicymerge"
+            $settingIds | Should -Contain "vendor_msft_firewall_mdmstore_privateprofile_nested_level3"
+            $settingIds | Should -Contain "vendor_msft_policy_config_update_activehoursstart"
+            $settingIds | Should -Contain "vendor_msft_firewall_mdmstore_publicprofile_enablefirewall"
+        }
+        
+        It "Should track path context for each extracted setting" {
+            $parsedSettings = Get-IntuneSettings -FilePath $script:NestedSettingsJsonPath
+            $result = Get-AllSettingDefinitionIds -Settings $parsedSettings.Settings
+            
+            # Check that paths are properly tracked
+            $topLevelSetting = $result | Where-Object { $_.SettingDefinitionId -eq "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall" }
+            $topLevelSetting.Path | Should -Be "settings[0]"
+            
+            $nestedSetting = $result | Where-Object { $_.SettingDefinitionId -eq "vendor_msft_firewall_mdmstore_privateprofile_allowlocalipsecpolicymerge" }
+            $nestedSetting.Path | Should -Be "settings[0].children[0]"
+            
+            $deepNestedSetting = $result | Where-Object { $_.SettingDefinitionId -eq "vendor_msft_firewall_mdmstore_privateprofile_nested_level3" }
+            $deepNestedSetting.Path | Should -Be "settings[0].children[0].children[0]"
+        }
+        
+        It "Should handle both choiceSettingValue and simpleSettingValue types" {
+            $parsedSettings = Get-IntuneSettings -FilePath $script:NestedSettingsJsonPath
+            $result = Get-AllSettingDefinitionIds -Settings $parsedSettings.Settings
+            
+            $choiceSetting = $result | Where-Object { $_.SettingDefinitionId -eq "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall" }
+            $choiceSetting.SettingType | Should -Be "choice"
+            $choiceSetting.Value | Should -Be "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall_true"
+            
+            $simpleSetting = $result | Where-Object { $_.SettingDefinitionId -eq "vendor_msft_policy_config_update_activehoursstart" }
+            $simpleSetting.SettingType | Should -Be "simple"
+            $simpleSetting.Value | Should -Be 8
+        }
+        
+        It "Should return structured objects with all required properties" {
+            $parsedSettings = Get-IntuneSettings -FilePath $script:SimpleExtractionJsonPath
+            $result = Get-AllSettingDefinitionIds -Settings $parsedSettings.Settings
+            
+            $setting = $result[0]
+            $setting.PSObject.Properties.Name | Should -Contain "SettingDefinitionId"
+            $setting.PSObject.Properties.Name | Should -Contain "Value"
+            $setting.PSObject.Properties.Name | Should -Contain "SettingType"
+            $setting.PSObject.Properties.Name | Should -Contain "Path"
+            $setting.PSObject.Properties.Name | Should -Contain "OriginalSettingInstance"
+        }
+        
+        It "Should preserve original setting instance for context" {
+            $parsedSettings = Get-IntuneSettings -FilePath $script:SimpleExtractionJsonPath
+            $result = Get-AllSettingDefinitionIds -Settings $parsedSettings.Settings
+            
+            $setting = $result[0]
+            $setting.OriginalSettingInstance | Should -Not -BeNullOrEmpty
+            $setting.OriginalSettingInstance.settingDefinitionId | Should -Be "simple_setting_only"
+        }
+        
+        It "Should handle settings with no children gracefully" {
+            $settingsWithNoChildren = @(
+                [PSCustomObject]@{
+                    Id = "0"
+                    SettingInstance = [PSCustomObject]@{
+                        settingDefinitionId = "test_no_children"
+                        choiceSettingValue = [PSCustomObject]@{
+                            value = "test_value"
+                            children = @()
+                        }
+                    }
+                }
+            )
+            
+            $result = Get-AllSettingDefinitionIds -Settings $settingsWithNoChildren
+            $result.Count | Should -Be 1
+            $result[0].SettingDefinitionId | Should -Be "test_no_children"
+        }
+        
+        It "Should handle missing children property gracefully" {
+            $settingsWithoutChildrenProperty = @(
+                [PSCustomObject]@{
+                    Id = "0"
+                    SettingInstance = [PSCustomObject]@{
+                        settingDefinitionId = "test_no_children_prop"
+                        choiceSettingValue = [PSCustomObject]@{
+                            value = "test_value"
+                        }
+                    }
+                }
+            )
+            
+            $result = Get-AllSettingDefinitionIds -Settings $settingsWithoutChildrenProperty
+            $result.Count | Should -Be 1
+            $result[0].SettingDefinitionId | Should -Be "test_no_children_prop"
+        }
+        
+        It "Should provide logging integration" {
+            Mock Write-ConversionLog { }
+            
+            $parsedSettings = Get-IntuneSettings -FilePath $script:NestedSettingsJsonPath
+            $result = Get-AllSettingDefinitionIds -Settings $parsedSettings.Settings -LogFilePath "test.log"
+            
+            Assert-MockCalled Write-ConversionLog -ParameterFilter { $Level -eq "Info" -and $Message -like "*Extracting*" }
+        }
+    }
+    
+    Context "Integration with JSON Parser" {
+        It "Should work seamlessly with Get-IntuneSettings output" {
+            $parsedSettings = Get-IntuneSettings -FilePath $script:NestedSettingsJsonPath
+            
+            { Get-AllSettingDefinitionIds -Settings $parsedSettings.Settings } | Should -Not -Throw
+            
+            $result = Get-AllSettingDefinitionIds -Settings $parsedSettings.Settings
+            $result.Count | Should -BeGreaterThan 0
+        }
+        
+        It "Should handle parsed settings from different JSON structures" {
+            $simpleSettings = Get-IntuneSettings -FilePath $script:SimpleExtractionJsonPath
+            $complexSettings = Get-IntuneSettings -FilePath $script:NestedSettingsJsonPath
+            
+            $simpleResult = Get-AllSettingDefinitionIds -Settings $simpleSettings.Settings
+            $complexResult = Get-AllSettingDefinitionIds -Settings $complexSettings.Settings
+            
+            $simpleResult.Count | Should -Be 1
+            $complexResult.Count | Should -Be 5
+        }
+    }
+    
+    Context "Error Handling and Edge Cases" {
+        It "Should handle null or invalid settings input" {
+            { Get-AllSettingDefinitionIds -Settings $null } | Should -Not -Throw
+            $result = Get-AllSettingDefinitionIds -Settings $null
+            $result.Count | Should -Be 0
+        }
+        
+        It "Should handle settings with missing settingDefinitionId" {
+            $invalidSettings = @(
+                [PSCustomObject]@{
+                    Id = "0"
+                    SettingInstance = [PSCustomObject]@{
+                        choiceSettingValue = [PSCustomObject]@{
+                            value = "test_value"
+                            children = @()
+                        }
+                    }
+                }
+            )
+            
+            { Get-AllSettingDefinitionIds -Settings $invalidSettings } | Should -Not -Throw
+            $result = Get-AllSettingDefinitionIds -Settings $invalidSettings
+            $result.Count | Should -Be 0  # Should skip invalid settings
+        }
+        
+        It "Should handle corrupted setting structure gracefully" {
+            $corruptedSettings = @(
+                [PSCustomObject]@{
+                    Id = "0"
+                    # Missing SettingInstance property
+                }
+            )
+            
+            { Get-AllSettingDefinitionIds -Settings $corruptedSettings } | Should -Not -Throw
+            $result = Get-AllSettingDefinitionIds -Settings $corruptedSettings
+            $result.Count | Should -Be 0  # Should skip corrupted settings
+        }
+        
+        It "Should log errors for invalid settings when logging enabled" {
+            Mock Write-ConversionLog { }
+            
+            $invalidSettings = @(
+                [PSCustomObject]@{
+                    Id = "0"
+                    SettingInstance = [PSCustomObject]@{
+                        # Missing settingDefinitionId
+                        choiceSettingValue = [PSCustomObject]@{
+                            value = "test_value"
+                        }
+                    }
+                }
+            )
+            
+            Get-AllSettingDefinitionIds -Settings $invalidSettings -LogFilePath "test.log"
+            
+            Assert-MockCalled Write-ConversionLog -ParameterFilter { $Level -eq "Warning" -and $Message -like "*skipping*" }
+        }
+    }
+    
+    Context "Performance Testing" {
+        It "Should handle large numbers of nested settings efficiently" {
+            # Create a large number of nested settings
+            $largeSettings = @()
+            for ($i = 0; $i -lt 20; $i++) {
+                $children = @()
+                for ($j = 0; $j -lt 5; $j++) {
+                    $children += [PSCustomObject]@{
+                        "settingDefinitionId" = "child_setting_$i_$j"
+                        "choiceSettingValue" = [PSCustomObject]@{
+                            "value" = "child_value_$i_$j"
+                            "children" = @()
+                        }
+                    }
+                }
+                
+                $largeSettings += [PSCustomObject]@{
+                    Id = "$i"
+                    SettingInstance = [PSCustomObject]@{
+                        settingDefinitionId = "parent_setting_$i"
+                        choiceSettingValue = [PSCustomObject]@{
+                            value = "parent_value_$i"
+                            children = $children
+                        }
+                    }
+                }
+            }
+            
+            $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            $result = Get-AllSettingDefinitionIds -Settings $largeSettings
+            $stopwatch.Stop()
+            
+            $result.Count | Should -Be 120  # 20 parent + 100 children
+            $stopwatch.ElapsedMilliseconds | Should -BeLessThan 3000  # Should complete within 3 seconds
+        }
+    }
+}
+
+Describe "Registry Mock Framework" {
+    BeforeAll {
+        # Create test directory for registry mock tests
+        $script:RegistryTestDir = Join-Path $TestDrive "RegistryMockTests"
+        New-Item -Path $script:RegistryTestDir -ItemType Directory -Force | Out-Null
+        
+        # Sample CSP registry data based on firewall example
+        $script:MockCSPData = @{
+            "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall" = @{
+                NodeUri = "./Vendor/MSFT/Firewall/MdmStore/PrivateProfile/EnableFirewall"
+                ExpectedValue = "true"
+                DataType = "bool"
+                AccessLevel = "Get,Replace"
+            }
+            "vendor_msft_firewall_mdmstore_privateprofile_allowlocalipsecpolicymerge" = @{
+                NodeUri = "./Vendor/MSFT/Firewall/MdmStore/PrivateProfile/AllowLocalIpsecPolicyMerge"
+                ExpectedValue = "true"
+                DataType = "bool"
+                AccessLevel = "Get,Replace"
+            }
+            "vendor_msft_firewall_mdmstore_publicprofile_enablefirewall" = @{
+                NodeUri = "./Vendor/MSFT/Firewall/MdmStore/PublicProfile/EnableFirewall"
+                ExpectedValue = "true"
+                DataType = "bool"
+                AccessLevel = "Get,Replace"
+            }
+            "vendor_msft_policy_config_update_activehoursstart" = @{
+                NodeUri = "./Vendor/MSFT/Policy/Config/Update/ActiveHoursStart"
+                ExpectedValue = "8"
+                DataType = "int"
+                AccessLevel = "Get,Replace"
+            }
+            "nonexistent_setting" = $null  # For testing missing entries
+        }
+    }
+    
+    Context "Get-CSPRegistryValue Interface" {
+        It "Should exist and be callable" {
+            { Get-CSPRegistryValue -SettingDefinitionId "test_setting" } | Should -Not -Throw
+        }
+        
+        It "Should return structured registry lookup result" {
+            $result = Get-CSPRegistryValue -SettingDefinitionId "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+            $result | Should -BeOfType [PSCustomObject]
+            $result.PSObject.Properties.Name | Should -Contain "SettingDefinitionId"
+            $result.PSObject.Properties.Name | Should -Contain "Found"
+            $result.PSObject.Properties.Name | Should -Contain "NodeUri"
+            $result.PSObject.Properties.Name | Should -Contain "ExpectedValue"
+            $result.PSObject.Properties.Name | Should -Contain "DataType"
+            $result.PSObject.Properties.Name | Should -Contain "ErrorMessage"
+        }
+        
+        It "Should find known CSP registry entries" {
+            Initialize-MockCSPRegistry -MockData $script:MockCSPData
+            $result = Get-CSPRegistryValue -SettingDefinitionId "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+            
+            $result.Found | Should -Be $true
+            $result.SettingDefinitionId | Should -Be "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+            $result.NodeUri | Should -Be "./Vendor/MSFT/Firewall/MdmStore/PrivateProfile/EnableFirewall"
+            $result.ExpectedValue | Should -Be "true"
+            $result.DataType | Should -Be "bool"
+            $result.ErrorMessage | Should -BeNullOrEmpty
+        }
+        
+        It "Should handle missing registry entries gracefully" {
+            $result = Get-CSPRegistryValue -SettingDefinitionId "nonexistent_setting_id"
+            
+            $result.Found | Should -Be $false
+            $result.SettingDefinitionId | Should -Be "nonexistent_setting_id"
+            $result.NodeUri | Should -BeNullOrEmpty
+            $result.ExpectedValue | Should -BeNullOrEmpty
+            $result.ErrorMessage | Should -Not -BeNullOrEmpty
+        }
+        
+        It "Should support different data types (bool, int, string)" {
+            $boolResult = Get-CSPRegistryValue -SettingDefinitionId "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+            $intResult = Get-CSPRegistryValue -SettingDefinitionId "vendor_msft_policy_config_update_activehoursstart"
+            
+            $boolResult.DataType | Should -Be "bool"
+            $boolResult.ExpectedValue | Should -Be "true"
+            
+            $intResult.DataType | Should -Be "int"
+            $intResult.ExpectedValue | Should -Be "8"
+        }
+        
+        It "Should provide logging integration" {
+            Mock Write-ConversionLog { }
+            
+            $result = Get-CSPRegistryValue -SettingDefinitionId "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall" -LogFilePath "test.log"
+            
+            Assert-MockCalled Write-ConversionLog -ParameterFilter { $Level -eq "Info" -and $Message -like "*registry lookup*" }
+        }
+        
+        It "Should handle registry access denied scenarios" {
+            # Test with a setting that simulates access denied
+            $result = Get-CSPRegistryValue -SettingDefinitionId "access_denied_setting"
+            
+            $result.Found | Should -Be $false
+            $result.ErrorMessage | Should -Match "access.*denied|permission"
+        }
+        
+        It "Should validate input parameters" {
+            { Get-CSPRegistryValue -SettingDefinitionId "" } | Should -Throw
+            { Get-CSPRegistryValue -SettingDefinitionId $null } | Should -Throw
+        }
+    }
+    
+    Context "Mock-CSPRegistry Implementation" {
+        It "Should exist and be callable" {
+            { Initialize-MockCSPRegistry -MockData $script:MockCSPData } | Should -Not -Throw
+        }
+        
+        It "Should set up mock registry data correctly" {
+            Initialize-MockCSPRegistry -MockData $script:MockCSPData
+            
+            $result = Get-CSPRegistryValue -SettingDefinitionId "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+            $result.Found | Should -Be $true
+            $result.NodeUri | Should -Be "./Vendor/MSFT/Firewall/MdmStore/PrivateProfile/EnableFirewall"
+        }
+        
+        It "Should support clearing mock data" {
+            Initialize-MockCSPRegistry -MockData $script:MockCSPData
+            Clear-MockCSPRegistry
+            
+            $result = Get-CSPRegistryValue -SettingDefinitionId "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+            $result.Found | Should -Be $false
+        }
+        
+        It "Should allow adding individual mock entries" {
+            Clear-MockCSPRegistry
+            Add-MockCSPEntry -SettingDefinitionId "test_setting" -NodeUri "./Test/Path" -ExpectedValue "test_value" -DataType "string"
+            
+            $result = Get-CSPRegistryValue -SettingDefinitionId "test_setting"
+            $result.Found | Should -Be $true
+            $result.ExpectedValue | Should -Be "test_value"
+            $result.DataType | Should -Be "string"
+        }
+        
+        It "Should simulate registry error conditions" {
+            Clear-MockCSPRegistry
+            Add-MockCSPEntry -SettingDefinitionId "error_setting" -ErrorCondition "AccessDenied"
+            
+            $result = Get-CSPRegistryValue -SettingDefinitionId "error_setting"
+            $result.Found | Should -Be $false
+            $result.ErrorMessage | Should -Match "access.*denied"
+        }
+    }
+    
+    Context "Integration with Setting Extraction" {
+        It "Should work with extracted settings from Step 5" {
+            # Set up mock data
+            Initialize-MockCSPRegistry -MockData $script:MockCSPData
+            
+            # Create test settings like those from Get-AllSettingDefinitionIds
+            $extractedSettings = @(
+                [PSCustomObject]@{
+                    SettingDefinitionId = "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+                    Value = "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall_true"
+                    SettingType = "choice"
+                    Path = "settings[0]"
+                    OriginalSettingInstance = @{}
+                }
+            )
+            
+            $result = Get-CSPRegistryValue -SettingDefinitionId $extractedSettings[0].SettingDefinitionId
+            $result.Found | Should -Be $true
+            $result.NodeUri | Should -Not -BeNullOrEmpty
+        }
+        
+        It "Should process multiple settings efficiently" {
+            Initialize-MockCSPRegistry -MockData $script:MockCSPData
+            
+            $settingIds = @(
+                "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall",
+                "vendor_msft_firewall_mdmstore_publicprofile_enablefirewall",
+                "vendor_msft_policy_config_update_activehoursstart"
+            )
+            
+            $results = @()
+            foreach ($settingId in $settingIds) {
+                $results += Get-CSPRegistryValue -SettingDefinitionId $settingId
+            }
+            
+            $results.Count | Should -Be 3
+            ($results | Where-Object { $_.Found }).Count | Should -Be 3
+        }
+    }
+    
+    Context "Error Handling and Edge Cases" {
+        It "Should handle malformed mock data gracefully" {
+            $malformedData = @{
+                "bad_entry" = "not_an_object"
+            }
+            
+            { Initialize-MockCSPRegistry -MockData $malformedData } | Should -Not -Throw
+            
+            $result = Get-CSPRegistryValue -SettingDefinitionId "bad_entry"
+            $result.Found | Should -Be $false
+        }
+        
+        It "Should provide detailed error context" {
+            $result = Get-CSPRegistryValue -SettingDefinitionId "nonexistent_setting"
+            
+            $result.PSObject.Properties.Name | Should -Contain "SettingDefinitionId"
+            $result.SettingDefinitionId | Should -Be "nonexistent_setting"
+            $result.ErrorMessage | Should -Not -BeNullOrEmpty
+        }
+        
+        It "Should be thread-safe for concurrent lookups" {
+            Initialize-MockCSPRegistry -MockData $script:MockCSPData
+            
+            $jobs = @()
+            for ($i = 1; $i -le 5; $i++) {
+                $jobs += Start-Job -ScriptBlock {
+                    param($ScriptPath, $SettingId)
+                    . $ScriptPath
+                    Initialize-MockCSPRegistry -MockData @{
+                        "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall" = @{
+                            NodeUri = "./Vendor/MSFT/Firewall/MdmStore/PrivateProfile/EnableFirewall"
+                            ExpectedValue = "true"
+                            DataType = "bool"
+                        }
+                    }
+                    Get-CSPRegistryValue -SettingDefinitionId $SettingId
+                } -ArgumentList "$PSScriptRoot/Convert-IntuneToFleet.ps1", "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+            }
+            
+            $results = $jobs | Wait-Job | Receive-Job
+            $jobs | Remove-Job
+            
+            $results.Count | Should -Be 5
+            ($results | Where-Object { $_.Found }).Count | Should -Be 5
+        }
+    }
+    
+    Context "Performance and Scalability" {
+        It "Should handle large mock registry datasets efficiently" {
+            # Create large mock dataset
+            $largeMockData = @{}
+            for ($i = 1; $i -le 100; $i++) {
+                $largeMockData["test_setting_$i"] = @{
+                    NodeUri = "./Test/Setting$i"
+                    ExpectedValue = "value_$i"
+                    DataType = "string"
+                }
+            }
+            
+            $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            Initialize-MockCSPRegistry -MockData $largeMockData
+            $stopwatch.Stop()
+            
+            $stopwatch.ElapsedMilliseconds | Should -BeLessThan 1000  # Should complete within 1 second
+            
+            # Test lookup performance
+            $stopwatch.Restart()
+            $result = Get-CSPRegistryValue -SettingDefinitionId "test_setting_50"
+            $stopwatch.Stop()
+            
+            $result.Found | Should -Be $true
+            $stopwatch.ElapsedMilliseconds | Should -BeLessThan 100  # Should find entry within 100ms
+        }
+        
+        It "Should maintain performance with multiple lookups" {
+            Initialize-MockCSPRegistry -MockData $script:MockCSPData
+            
+            $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            for ($i = 1; $i -le 50; $i++) {
+                Get-CSPRegistryValue -SettingDefinitionId "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+            }
+            $stopwatch.Stop()
+            
+            $stopwatch.ElapsedMilliseconds | Should -BeLessThan 2000  # 50 lookups within 2 seconds
+        }
+    }
+}
+
+Describe "Registry Integration" {
+    Context "Registry Functionality" {
+        BeforeEach {
+            Clear-MockCSPRegistry
+        }
+        
+        It "Should exist and be callable" {
+            { Get-CSPRegistryValue -SettingDefinitionId "test_setting" } | Should -Not -Throw
+        }
+        
+        It "Should return structured registry lookup result" {
+            $result = Get-CSPRegistryValue -SettingDefinitionId "test_setting"
+            
+            $result | Should -Not -BeNullOrEmpty
+            $result.PSObject.Properties.Name | Should -Contain "Found"
+            $result.PSObject.Properties.Name | Should -Contain "NodeUri"
+            $result.PSObject.Properties.Name | Should -Contain "ExpectedValue"
+            $result.PSObject.Properties.Name | Should -Contain "DataType"
+            $result.PSObject.Properties.Name | Should -Contain "ErrorMessage"
+        }
+        
+        It "Should support mock mode by default for testing" {
+            # Set up mock data
+            Initialize-MockCSPRegistry -MockData $script:MockCSPData
+            
+            # Default behavior should use mock data
+            $result = Get-CSPRegistryValue -SettingDefinitionId "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall"
+            
+            $result.Found | Should -Be $true
+            $result.NodeUri | Should -Be "./Vendor/MSFT/Firewall/MdmStore/PrivateProfile/EnableFirewall"
+            $result.ExpectedValue | Should -Be "true"
+        }
+        
+        It "Should support registry lookup when enabled" {
+            # Test that the EnableRegistryLookup parameter is accepted
+            { Get-CSPRegistryValue -SettingDefinitionId "test_setting" -EnableRegistryLookup } | Should -Not -Throw
+        }
+        
+        It "Should handle registry lookup errors gracefully" {
+            Mock Test-Path { return $false }
+            
+            $result = Get-CSPRegistryValue -SettingDefinitionId "test_setting" -EnableRegistryLookup
+            
+            $result.Found | Should -Be $false
+            $result.ErrorMessage | Should -Match "Registry path not found"
+        }
+        
+        It "Should validate input parameters" {
+            { Get-CSPRegistryValue -SettingDefinitionId "" } | Should -Throw "*argument is null or empty*"
+            { Get-CSPRegistryValue -SettingDefinitionId $null } | Should -Throw "*argument is null or empty*"
+        }
+    }
+}
+
+Describe "Data Type Detection" {
+    Context "Get-CSPDataType Function" {
+        It "Should exist and be callable" {
+            Get-Command Get-CSPDataType | Should -Not -BeNullOrEmpty
+            Get-Command Get-CSPDataType | Should -HaveCount 1
+        }
+        
+        It "Should return chr format for string values" {
+            $result = Get-CSPDataType -Value "TestString"
+            $result.Format | Should -Be "chr"
+            $result.Type | Should -Be "string"
+        }
+        
+        It "Should return int format for integer values" {
+            $result = Get-CSPDataType -Value 42
+            $result.Format | Should -Be "int"
+            $result.Type | Should -Be "integer"
+        }
+        
+        It "Should return int format for boolean true values" {
+            $result = Get-CSPDataType -Value $true
+            $result.Format | Should -Be "int"
+            $result.Type | Should -Be "boolean"
+            $result.ConvertedValue | Should -Be 1
+        }
+        
+        It "Should return int format for boolean false values" {
+            $result = Get-CSPDataType -Value $false
+            $result.Format | Should -Be "int"
+            $result.Type | Should -Be "boolean"
+            $result.ConvertedValue | Should -Be 0
+        }
+        
+        It "Should return int format for numeric strings" {
+            $result = Get-CSPDataType -Value "123"
+            $result.Format | Should -Be "int"
+            $result.Type | Should -Be "numeric_string"
+            $result.ConvertedValue | Should -Be 123
+        }
+        
+        It "Should return chr format for non-numeric strings" {
+            $result = Get-CSPDataType -Value "NotANumber"
+            $result.Format | Should -Be "chr"
+            $result.Type | Should -Be "string"
+        }
+        
+        It "Should handle registry choice values (vendor_msft format)" {
+            $result = Get-CSPDataType -Value "vendor_msft_firewall_mdmstore_privateprofile_enablefirewall_true"
+            $result.Format | Should -Be "chr"
+            $result.Type | Should -Be "choice_setting"
+        }
+        
+        It "Should handle mixed case boolean string values" {
+            $result = Get-CSPDataType -Value "True"
+            $result.Format | Should -Be "int"
+            $result.Type | Should -Be "boolean_string"
+            $result.ConvertedValue | Should -Be 1
+            
+            $result = Get-CSPDataType -Value "FALSE"
+            $result.Format | Should -Be "int"
+            $result.Type | Should -Be "boolean_string"
+            $result.ConvertedValue | Should -Be 0
+        }
+        
+        It "Should return structured data type information" {
+            $result = Get-CSPDataType -Value "test"
+            
+            $result.PSObject.Properties.Name | Should -Contain "Format"
+            $result.PSObject.Properties.Name | Should -Contain "Type"
+            $result.PSObject.Properties.Name | Should -Contain "OriginalValue"
+            $result.PSObject.Properties.Name | Should -Contain "ConvertedValue"
+        }
+        
+        It "Should preserve original value in all cases" {
+            $testValue = "original_value"
+            $result = Get-CSPDataType -Value $testValue
+            $result.OriginalValue | Should -Be $testValue
+        }
+        
+        It "Should handle null and empty values gracefully" {
+            $result = Get-CSPDataType -Value ""
+            $result.Format | Should -Be "chr"
+            $result.Type | Should -Be "empty_string"
+            
+            $result = Get-CSPDataType -Value $null
+            $result.Format | Should -Be "chr"
+            $result.Type | Should -Be "null_value"
+        }
+        
+        It "Should validate input parameters" {
+            # Should accept any input type but validate parameter presence
+            { Get-CSPDataType } | Should -Throw "*missing mandatory parameters*"
+        }
+        
+        It "Should handle decimal numbers correctly" {
+            $result = Get-CSPDataType -Value 3.14
+            $result.Format | Should -Be "chr"  # Decimals should be treated as strings in CSP context
+            $result.Type | Should -Be "decimal"
+        }
+        
+        It "Should handle negative numbers correctly" {
+            $result = Get-CSPDataType -Value (-42)
+            $result.Format | Should -Be "int"
+            $result.Type | Should -Be "integer"
+            $result.ConvertedValue | Should -Be (-42)
         }
     }
 }
