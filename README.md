@@ -4,13 +4,13 @@ A PowerShell tool that converts Microsoft Intune configuration policy JSON expor
 
 ## Overview
 
-This tool bridges the gap between Microsoft Intune device management and Fleet device management by converting Intune policies into the proper SyncML XML format required by Fleet's Windows configuration profiles.
+This tool assists in migrating Microsoft Intune enrolled devices to Fleet by converting Intune policies into the SyncML XML format required by Fleet's Windows configuration profiles.
 
 ### Key Features
 
 - **Universal Conversion**: Handles any Intune policy type with ~80% coverage out of the box
-- **Intelligent Format Detection**: Automatically determines correct SyncML format (bool, int, chr) based on Microsoft CSP documentation
-- **Registry-Based Path Resolution**: Uses Windows CSP NodeCache registry to ensure proper TitleCase NodeURI paths
+- **Intelligent Format Detection**: Automatically determines the correct SyncML format (bool, int, chr) based on Microsoft CSP documentation
+- **Registry-Based Path Resolution**: Uses Windows CSP NodeCache registry to make sure proper TitleCase NodeURI paths
 - **Runtime Policy Resolution**: Resolver map system for policies requiring dynamic value determination
 - **Comprehensive Logging**: Detailed CSV logs showing conversion status for each policy
 
@@ -72,7 +72,7 @@ This tool bridges the gap between Microsoft Intune device management and Fleet d
 ## How It Works
 
 ### 1. Policy Extraction
-The script recursively parses the nested Intune JSON structure, extracting all individual policy settings including parent choice values and child configurations.
+The script recursively parses the nested Intune JSON structure, extracting all individual policy settings, including parent choice values and child configurations.
 
 ### 2. Registry Lookup
 For each policy, the script queries the Windows CSP NodeCache registry to:
@@ -86,7 +86,7 @@ Based on Microsoft CSP documentation and testing, the script determines whether 
 - **`chr` format**: For string values with CDATA wrapping
 
 ### 4. Value Resolution
-For policies with ExpectedValue = -1, the script uses the resolver map to execute PowerShell expressions that determine the actual current system value.
+For policies with ExpectedValue = -1, the script uses the resolver map to execute PowerShell expressions that determine the current system value.
 
 ### 5. XML Generation
 Each policy is converted to proper SyncML XML format:
@@ -106,7 +106,7 @@ Each policy is converted to proper SyncML XML format:
 
 ## Resolver Map
 
-The `resolver-map.json` file contains PowerShell expressions for policies that Intune sometimes leaves unset (ExpectedValue = -1). The script uses this file to manually query the Registry to verify the value. Each entry maps a CSP path segment to a PowerShell command:
+The `resolver-map.json` file contains PowerShell expressions for policies that Intune sometimes leaves unset (ExpectedValue = -1). The script uses this file to query the Registry to verify the value. Each entry maps a CSP path segment to a PowerShell command:
 
 ```json
 {
@@ -145,7 +145,7 @@ Add entries to `resolver-map.json` for policies requiring dynamic value resoluti
 - Try running on a system where the policy has been applied via Intune
 
 **"Resolver execution failed"**
-- Check that required PowerShell modules are available
+- Check that the required PowerShell modules are available
 - Verify the resolver expression syntax in `resolver-map.json`
 
 ### Debug Mode
@@ -162,7 +162,7 @@ Enable debug mode to see detailed processing information:
 
 ## Contributing
 
-The script is designed for ~80% coverage of common Intune policies. For edge cases:
+The script is designed for ~80% coverage of standard Intune policies. For edge cases:
 
 1. Add patterns to the `$booleanFormatPolicies` array
 2. Create resolver map entries for complex policies  
