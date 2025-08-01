@@ -1,0 +1,41 @@
+{
+  "_comment": "Generic resolver map for Intune policies - covers common CSP scenarios",
+  "_usage": "Key format: 'CSPArea/PolicyName' - value is PowerShell expression that returns 1/0 or actual value",
+  
+  "Firewall/EnableFirewall": "if (@(Get-NetFirewallProfile | Where-Object { $_.Enabled -eq 'True' }).Count -gt 0) { 1 } else { 0 }",
+  "Firewall/AllowLocalIPSecPolicyMerge": "try { $profiles = @('PrivateProfile', 'PublicProfile', 'DomainProfile'); foreach($p in $profiles) { try { $val = Get-ItemPropertyValue -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\SharedAccess\\Parameters\\FirewallPolicy\\$p\" -Name 'AllowLocalIPSecPolicyMerge' -ErrorAction Stop; return $val } catch { continue } }; 1 } catch { 1 }",
+  "Firewall/AllowLocalPolicyMerge": "try { $profiles = @('PrivateProfile', 'PublicProfile', 'DomainProfile'); foreach($p in $profiles) { try { $val = Get-ItemPropertyValue -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\SharedAccess\\Parameters\\FirewallPolicy\\$p\" -Name 'AllowLocalPolicyMerge' -ErrorAction Stop; return $val } catch { continue } }; 1 } catch { 1 }",
+  "Firewall/AuthAppsAllowUserPrefMerge": "try { $profiles = @('PrivateProfile', 'PublicProfile', 'DomainProfile'); foreach($p in $profiles) { try { $val = Get-ItemPropertyValue -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\SharedAccess\\Parameters\\FirewallPolicy\\$p\" -Name 'AuthAppsAllowUserPrefMerge' -ErrorAction Stop; return $val } catch { continue } }; 1 } catch { 1 }",
+  "Firewall/DisableStealthModeIpsecSecuredPacketExemption": "try { $profiles = @('PrivateProfile', 'PublicProfile', 'DomainProfile'); foreach($p in $profiles) { try { $val = Get-ItemPropertyValue -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\SharedAccess\\Parameters\\FirewallPolicy\\$p\" -Name 'DisableStealthModeIpsecSecuredPacketExemption' -ErrorAction Stop; return $val } catch { continue } }; 1 } catch { 1 }",
+  "Firewall/GlobalPortsAllowUserPrefMerge": "try { $profiles = @('PrivateProfile', 'PublicProfile', 'DomainProfile'); foreach($p in $profiles) { try { $val = Get-ItemPropertyValue -Path \"HKLM:\\SYSTEM\\CurrentControlSet\\Services\\SharedAccess\\Parameters\\FirewallPolicy\\$p\" -Name 'GlobalPortsAllowUserPrefMerge' -ErrorAction Stop; return $val } catch { continue } }; 1 } catch { 1 }",
+  "Firewall/DefaultInboundAction": "if ((Get-NetFirewallProfile | Select-Object -ExpandProperty DefaultInboundAction | Select-Object -Unique) -contains 'Block') { 0 } else { 1 }",
+  "Firewall/DefaultOutboundAction": "if ((Get-NetFirewallProfile | Select-Object -ExpandProperty DefaultOutboundAction | Select-Object -Unique) -contains 'Allow') { 1 } else { 0 }",
+  
+  "Defender/RealTimeProtection": "try { if ((Get-MpPreference -ErrorAction Stop).DisableRealtimeMonitoring -eq $false) { 1 } else { 0 } } catch { 1 }",
+  "Defender/CloudProtection": "try { if ((Get-MpPreference -ErrorAction Stop).MAPSReporting -gt 0) { 1 } else { 0 } } catch { 1 }",
+  "Defender/AutomaticSampleSubmission": "try { if ((Get-MpPreference -ErrorAction Stop).SubmitSamplesConsent -gt 0) { 1 } else { 0 } } catch { 1 }",
+  "Defender/PUAProtection": "try { if ((Get-MpPreference -ErrorAction Stop).PUAProtection -eq 1) { 1 } else { 0 } } catch { 0 }",
+  "Defender/TamperProtection": "try { if ((Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows Defender\\Features' -Name 'TamperProtection' -ErrorAction Stop) -eq 5) { 1 } else { 0 } } catch { 0 }",
+  
+  "BitLocker/RequireDeviceEncryption": "try { if ((Get-BitLockerVolume -MountPoint C: -ErrorAction Stop).VolumeStatus -eq 'FullyEncrypted') { 1 } else { 0 } } catch { 0 }",
+  "BitLocker/RequireTPM": "try { if ((Get-BitLockerVolume -MountPoint C: -ErrorAction Stop).KeyProtector | Where-Object { $_.KeyProtectorType -eq 'Tpm' }) { 1 } else { 0 } } catch { 0 }",
+  "BitLocker/AllowStandardUsers": "try { if ((Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\FVE' -Name 'UseAdvancedStartup' -ErrorAction Stop) -eq 1) { 1 } else { 0 } } catch { 0 }",
+  
+  "SmartScreen/EnableSmartScreen": "try { if ((Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer' -Name 'SmartScreenEnabled' -ErrorAction Stop) -eq 'RequireAdmin') { 1 } else { 0 } } catch { 1 }",
+  "SmartScreen/EnableAppInstallControl": "try { if ((Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\SmartScreen' -Name 'ConfigureAppInstallControl' -ErrorAction Stop) -eq 1) { 1 } else { 0 } } catch { 0 }",
+  
+  "DeviceLock/RequirePassword": "try { if ((Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\DeviceLock' -Name 'PasswordRequired' -ErrorAction Stop) -eq 1) { 1 } else { 0 } } catch { 0 }",
+  "DeviceLock/PasswordComplexity": "try { Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Microsoft\\PolicyManager\\current\\device\\DeviceLock' -Name 'PasswordComplexity' -ErrorAction Stop } catch { 1 }",
+  
+  "System/AllowTelemetry": "try { Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection' -Name 'AllowTelemetry' -ErrorAction Stop } catch { 1 }",
+  "System/RequirePrivateStoreOnly": "try { if ((Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\WindowsStore' -Name 'RequirePrivateStoreOnly' -ErrorAction Stop) -eq 1) { 1 } else { 0 } } catch { 0 }",
+  "System/AllowAutoUpdate": "try { if ((Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU' -Name 'NoAutoUpdate' -ErrorAction Stop) -eq 0) { 1 } else { 0 } } catch { 1 }",
+  
+  "Privacy/LetAppsAccessCamera": "try { Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\webcam' -Name 'Value' -ErrorAction Stop; if ($_ -eq 'Allow') { 1 } else { 0 } } catch { 1 }",
+  "Privacy/LetAppsAccessMicrophone": "try { Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone' -Name 'Value' -ErrorAction Stop; if ($_ -eq 'Allow') { 1 } else { 0 } } catch { 1 }",
+  "Privacy/LetAppsAccessLocation": "try { Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location' -Name 'Value' -ErrorAction Stop; if ($_ -eq 'Allow') { 1 } else { 0 } } catch { 1 }",
+  
+  "Update/ActiveHoursStart": "try { Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings' -Name 'ActiveHoursStart' -ErrorAction Stop } catch { 8 }",
+  "Update/ActiveHoursEnd": "try { Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings' -Name 'ActiveHoursEnd' -ErrorAction Stop } catch { 17 }",
+  "Update/AllowAutoWindowsUpdateDownloadOverMeteredNetwork": "try { if ((Get-ItemPropertyValue -Path 'HKLM:\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings' -Name 'AllowAutoWindowsUpdateDownloadOverMeteredNetwork' -ErrorAction Stop) -eq 1) { 1 } else { 0 } } catch { 0 }"
+}
